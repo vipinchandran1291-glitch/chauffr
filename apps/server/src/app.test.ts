@@ -31,6 +31,12 @@ test('signed-out /me returns null', async () => {
   assert.deepEqual(res.json(), { user: null });
 });
 
+test('public rate card hides the commission', async () => {
+  const card = (await app.inject({ method: 'GET', url: '/api/rate-card' })).json().rateCard;
+  assert.equal(card.baseFare, 44_900);
+  assert.equal(card.commissionBps, undefined);
+});
+
 test('customer adds phone and a car', async () => {
   const c = await login('asha@example.com', 'customer');
   const me = await call(c, 'PATCH', '/api/me', { name: 'Asha', phone: '98450 12345' });

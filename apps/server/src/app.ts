@@ -9,6 +9,7 @@ import { adminRoutes } from './routes/admin';
 import { authRoutes } from './routes/auth';
 import { carRoutes } from './routes/cars';
 import { driverRoutes } from './routes/driver';
+import { pricingRoutes } from './routes/pricing';
 
 export async function buildApp() {
   runMigrations();
@@ -34,6 +35,7 @@ export async function buildApp() {
 
   app.get('/api/health', async () => ({ ok: true }));
   await app.register(authRoutes, { prefix: '/api' });
+  await app.register(pricingRoutes, { prefix: '/api' });
   await app.register(carRoutes, { prefix: '/api/cars' });
   await app.register(driverRoutes, { prefix: '/api/driver' });
   await app.register(adminRoutes, { prefix: '/api/admin' });

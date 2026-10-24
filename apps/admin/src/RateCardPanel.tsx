@@ -14,21 +14,20 @@ export function RateCardPanel() {
     );
   }, []);
 
-  if (error) return <p className="error">{error}</p>;
+  if (error) return <p className="alert danger small">{error}</p>;
   if (!card) return null;
 
-  const hours = card.baseMinutes / 60;
   return (
     <section className="card stack">
-      <div className="spread">
+      <div className="card-header">
         <h2>Active rate card</h2>
-        <span className="muted">{card.name}</span>
+        <span className="muted small">{card.name}</span>
       </div>
       <div className="stats">
-        <div className="stat"><strong>{formatINR(card.baseFare)}</strong><span className="muted">first {hours} hrs</span></div>
-        <div className="stat"><strong>{formatINR(card.extraPer30Min)}</strong><span className="muted">per extra 30 min</span></div>
-        <div className="stat"><strong>{formatINR(card.nightCharge)}</strong><span className="muted">night ({card.nightStartHour}:00–{card.nightEndHour}:00)</span></div>
-        <div className="stat"><strong>{card.commissionBps / 100}%</strong><span className="muted">commission</span></div>
+        <div className="stat"><span className="label">First {card.baseMinutes / 60} hrs</span><span className="value">{formatINR(card.baseFare)}</span></div>
+        <div className="stat"><span className="label">Per extra 30 min</span><span className="value">{formatINR(card.extraPer30Min)}</span></div>
+        <div className="stat"><span className="label">Night ({card.nightStartHour}:00–{card.nightEndHour}:00)</span><span className="value">{formatINR(card.nightCharge)}</span></div>
+        <div className="stat"><span className="label">Commission</span><span className="value">{card.commissionBps / 100}%</span></div>
       </div>
     </section>
   );

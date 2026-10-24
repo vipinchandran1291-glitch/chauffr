@@ -36,6 +36,16 @@ export interface PublicConfig {
   devLogin: boolean;
 }
 
+/** What customers see of the active rate card; the commission stays internal. */
+export interface PublicRateCard {
+  baseFare: number;
+  baseMinutes: number;
+  extraPer30Min: number;
+  nightCharge: number;
+  nightStartHour: number;
+  nightEndHour: number;
+}
+
 export interface Car {
   id: number;
   make: string;

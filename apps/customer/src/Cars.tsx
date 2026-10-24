@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useState, type FormEvent } from 'react';
 import {
   api,
   CAR_TYPE_LABELS,
@@ -9,29 +9,17 @@ import {
   type CarType,
   type Transmission,
 } from '@chauffr/shared';
+import { Icon } from '@chauffr/ui';
 
-export function Cars() {
-  const [cars, setCars] = useState<Car[] | null>(null);
+export function Cars({ cars, onChange }: { cars: Car[] | null; onChange(): Promise<void> }) {
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState('');
-
-  const load = useCallback(async () => {
-    try {
-      setCars((await api.get<{ cars: Car[] }>('/api/cars')).cars);
-    } catch (err) {
-      setError(errorMessage(err));
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
 
   async function remove(car: Car) {
     if (!confirm(`Remove ${car.make} ${car.model} (${car.regNumber})?`)) return;
     try {
       await api.del(`/api/cars/${car.id}`);
-      await load();
+      await onChange();
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -39,24 +27,37 @@ export function Cars() {
 
   return (
     <section className="card stack">
-      <div className="spread">
-        <h2>My cars</h2>
-        {!adding && <button type="button" className="secondary small" onClick={() => setAdding(true)}>Add car</button>}
+      <div className="card-header">
+        <h2>My garage</h2>
+        {!adding && (
+          <button type="button" className="secondary sm" onClick={() => setAdding(true)}>
+            <Icon name="plus" size={16} /> Add car
+          </button>
+        )}
       </div>
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error small">{error}</p>}
       {cars === null ? (
         <p className="muted">Loading…</p>
       ) : cars.length === 0 && !adding ? (
-        <p className="muted">No cars yet. Drivers are matched to your car's transmission and size.</p>
+        <div className="empty">
+          <Icon name="car" size={28} />
+          <span>No cars yet. We match drivers to your car's transmission and size.</span>
+          <button type="button" className="sm" onClick={() => setAdding(true)}>Add your car</button>
+        </div>
       ) : (
         <ul className="list">
           {cars.map((car) => (
-            <li key={car.id} className="spread">
-              <div>
+            <li key={car.id} className="list-item">
+              <span className="icon-tile"><Icon name="car" /></span>
+              <div className="grow">
                 <strong>{car.make} {car.model}</strong>
-                <p className="muted">{car.regNumber} · {car.transmission} · {CAR_TYPE_LABELS[car.carType]}</p>
+                <div className="muted small">
+                  {car.regNumber} · <span style={{ textTransform: 'capitalize' }}>{car.transmission}</span> · {CAR_TYPE_LABELS[car.carType]}
+                </div>
               </div>
-              <button type="button" className="danger small" onClick={() => void remove(car)}>Remove</button>
+              <button type="button" className="danger sm" aria-label={`Remove ${car.make} ${car.model}`} onClick={() => void remove(car)}>
+                <Icon name="trash" size={16} />
+              </button>
             </li>
           ))}
         </ul>
@@ -65,7 +66,7 @@ export function Cars() {
         <AddCarForm
           onDone={async (added) => {
             setAdding(false);
-            if (added) await load();
+            if (added) await onChange();
           }}
         />
       )}
@@ -98,11 +99,11 @@ function AddCarForm({ onDone }: { onDone(added: boolean): void }) {
   return (
     <form className="stack" onSubmit={submit}>
       <div className="row">
-        <label style={{ flex: 1 }}>
+        <label className="grow">
           Make
           <input value={make} onChange={(e) => setMake(e.target.value)} placeholder="Maruti" required />
         </label>
-        <label style={{ flex: 1 }}>
+        <label className="grow">
           Model
           <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="Swift" required />
         </label>
@@ -111,21 +112,29 @@ function AddCarForm({ onDone }: { onDone(added: boolean): void }) {
         Registration number
         <input value={regNumber} onChange={(e) => setRegNumber(e.target.value)} placeholder="KA 01 AB 1234" required />
       </label>
-      <div className="row">
-        <label style={{ flex: 1 }}>
-          Transmission
-          <select value={transmission} onChange={(e) => setTransmission(e.target.value as Transmission)}>
-            {TRANSMISSIONS.map((t) => <option key={t} value={t}>{t === 'manual' ? 'Manual' : 'Automatic'}</option>)}
-          </select>
-        </label>
-        <label style={{ flex: 1 }}>
-          Type
-          <select value={carType} onChange={(e) => setCarType(e.target.value as CarType)}>
-            {CAR_TYPES.map((t) => <option key={t} value={t}>{CAR_TYPE_LABELS[t]}</option>)}
-          </select>
-        </label>
-      </div>
-      {error && <p className="error">{error}</p>}
+      <fieldset>
+        <legend>Transmission</legend>
+        <div className="choice-group">
+          {TRANSMISSIONS.map((t) => (
+            <label key={t} className="choice">
+              <input type="radio" name="transmission" checked={transmission === t} onChange={() => setTransmission(t)} />
+              {t === 'manual' ? 'Manual' : 'Automatic'}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Car type</legend>
+        <div className="choice-group">
+          {CAR_TYPES.map((t) => (
+            <label key={t} className="choice">
+              <input type="radio" name="carType" checked={carType === t} onChange={() => setCarType(t)} />
+              {CAR_TYPE_LABELS[t]}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+      {error && <p className="error small">{error}</p>}
       <div className="row">
         <button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save car'}</button>
         <button type="button" className="secondary" onClick={() => onDone(false)}>Cancel</button>

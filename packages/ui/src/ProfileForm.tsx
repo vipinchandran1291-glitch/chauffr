@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { api, errorMessage } from '@chauffr/shared';
+import { Icon } from './Icon';
 import { useSession } from './session';
 
 /** Collects the name and mobile number every account needs before using the app. */
@@ -25,8 +26,10 @@ export function ProfileForm({ intro }: { intro: string }) {
 
   return (
     <form className="card stack" onSubmit={submit}>
-      <h2>Your details</h2>
-      <p className="muted">{intro}</p>
+      <div className="stack-sm">
+        <h2>Welcome! Let's set up your account</h2>
+        <p className="muted">{intro}</p>
+      </div>
       <label>
         Full name
         <input value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" required />
@@ -45,8 +48,12 @@ export function ProfileForm({ intro }: { intro: string }) {
           />
         </div>
       </label>
-      {error && <p className="error">{error}</p>}
-      <button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Continue'}</button>
+      <p className="alert info small">
+        <Icon name="lock" size={18} />
+        Your number is only shared with your driver during a trip.
+      </p>
+      {error && <p className="error small">{error}</p>}
+      <button type="submit" className="block" disabled={saving}>{saving ? 'Saving…' : 'Continue'}</button>
     </form>
   );
 }
