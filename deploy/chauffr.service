@@ -1,0 +1,20 @@
+# /etc/systemd/system/chauffr.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now chauffr
+#   journalctl -u chauffr -f
+# Run exactly one instance: SQLite allows a single writer.
+
+[Unit]
+Description=Chauffr API
+After=network.target
+
+[Service]
+Type=simple
+User=chauffr
+WorkingDirectory=/srv/chauffr/apps/server
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
