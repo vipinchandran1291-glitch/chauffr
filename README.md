@@ -34,6 +34,22 @@ npm run typecheck
 npm run build    # builds the three apps into apps/*/dist
 ```
 
+## Production (VPS)
+
+Live at `https://chauffr.vipinlabs.tech` (customer), `/driver/` and `/admin/`, behind Caddy.
+
+| What | Where on the server |
+| --- | --- |
+| Code | `/srv/chauffr` (user `chauffr`) |
+| Settings | `/etc/chauffr/env` |
+| Database | `/var/lib/chauffr/data/chauffr.db` |
+| Backups | `/var/lib/chauffr/backups`, nightly 03:00 IST, 14 days kept |
+| Caddy site | `/etc/caddy/sites/chauffr.caddy` |
+| API service | `systemctl status chauffr`, logs: `journalctl -u chauffr` |
+
+To ship new code, push to `main` then on the VPS run `/srv/chauffr/deploy/deploy.sh` as root.
+After editing `/etc/chauffr/env`, run `systemctl restart chauffr`.
+
 ## How a booking works
 
 1. The customer adds a car (manual/automatic matters) and requests a driver for N hours.
