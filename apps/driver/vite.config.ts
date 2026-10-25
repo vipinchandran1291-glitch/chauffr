@@ -2,7 +2,9 @@ import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
+// Served at /driver/ on the same domain as the customer app.
 export default defineConfig({
+  base: '/driver/',
   plugins: [
     react(),
     VitePWA({
@@ -14,8 +16,9 @@ export default defineConfig({
         theme_color: '#0f766e',
         background_color: '#f5f7fb',
         display: 'standalone',
-        start_url: '/',
-        icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }],
+        start_url: '/driver/',
+        scope: '/driver/',
+        icons: [{ src: 'icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }],
       },
       workbox: { navigateFallbackDenylist: [/^\/api\//] },
     }),

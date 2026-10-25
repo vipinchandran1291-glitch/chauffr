@@ -1,0 +1,46 @@
+# Chauffr on one subdomain: customer app at /, driver app at /driver/, ops at /admin/.
+# Installed as /etc/caddy/sites/chauffr.caddy and imported from /etc/caddy/Caddyfile.
+
+# Hashed build assets are cached forever; everything else (index.html, sw.js,
+# manifest) is revalidated so new deploys show up straight away.
+(chauffr_spa) {
+	@hashed path /assets/*
+	@unhashed not path /assets/*
+	header @hashed Cache-Control "public, max-age=31536000, immutable"
+	header @unhashed Cache-Control "no-cache"
+	try_files {path} /index.html
+	file_server
+}
+
+chauffr.vipinlabs.tech {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	handle /api/* {
+		reverse_proxy 127.0.0.1:3010
+	}
+
+	redir /driver /driver/
+	redir /admin /admin/
+
+	handle_path /driver/* {
+		root * /srv/chauffr/apps/driver/dist
+		import chauffr_spa
+	}
+
+	handle_path /admin/* {
+		root * /srv/chauffr/apps/admin/dist
+		import chauffr_spa
+	}
+
+	handle {
+		root * /srv/chauffr/apps/customer/dist
+		import chauffr_spa
+	}
+}

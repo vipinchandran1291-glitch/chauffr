@@ -17,7 +17,9 @@ export default defineConfig({
         start_url: '/',
         icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }],
       },
-      workbox: { navigateFallbackDenylist: [/^\/api\//] },
+      // The driver app and ops dashboard live under the same origin; keep this
+      // service worker from answering their navigations with the customer app.
+      workbox: { navigateFallbackDenylist: [/^\/api\//, /^\/driver(\/|$)/, /^\/admin(\/|$)/] },
     }),
   ],
   server: {

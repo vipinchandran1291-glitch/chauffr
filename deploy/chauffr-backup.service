@@ -1,0 +1,13 @@
+[Unit]
+Description=Chauffr database backup
+
+[Service]
+Type=oneshot
+User=chauffr
+Group=chauffr
+EnvironmentFile=/etc/chauffr/env
+ExecStart=/usr/bin/node /srv/chauffr/deploy/backup.mjs
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/chauffr

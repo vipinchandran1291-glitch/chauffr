@@ -1,0 +1,22 @@
+[Unit]
+Description=Chauffr API
+After=network.target
+
+[Service]
+User=chauffr
+Group=chauffr
+WorkingDirectory=/srv/chauffr/apps/server
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/chauffr/env
+ExecStart=/usr/bin/node --import tsx src/index.ts
+Restart=on-failure
+RestartSec=3
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/chauffr
+
+[Install]
+WantedBy=multi-user.target
