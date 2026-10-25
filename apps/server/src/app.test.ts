@@ -1,102 +1,197 @@
-import assert from 'node:assert/strict';
-import { after, before, test } from 'node:test';
-import type { FastifyInstance } from 'fastify';
+import { beforeEach, describe, expect, it } from 'vitest';
+import type { AppName, Booking } from '@chauffr/shared';
+import { createApp } from './app.ts';
+import { openDb } from './db.ts';
+import { loadEnv } from './env.ts';
 
-process.env.NODE_ENV = 'test';
-process.env.DATABASE_PATH = ':memory:';
-process.env.DEV_LOGIN = '1';
-process.env.ADMIN_EMAILS = 'admin@chauffr.test';
+type App = ReturnType<typeof createApp>;
 
-const { buildApp } = await import('./app');
-let app: FastifyInstance;
+const env = loadEnv({ DEV_LOGIN: 'true', ADMIN_EMAILS: 'ops@chauffr.in' });
+const noGoogle = async () => {
+  throw new Error('not used');
+};
 
-before(async () => {
-  app = await buildApp();
-});
-after(() => app.close());
+class Client {
+  cookie = '';
+  constructor(
+    private app: App,
+    private appName: AppName,
+  ) {}
 
-async function login(email: string, appName: string): Promise<string> {
-  const res = await app.inject({ method: 'POST', url: '/api/auth/dev', payload: { email, app: appName } });
-  assert.equal(res.statusCode, 200, res.body);
-  const cookie = res.cookies.find((c) => c.name === 'chauffr_sid');
-  assert.ok(cookie);
-  return `chauffr_sid=${cookie.value}`;
+  async req(method: string, path: string, body?: unknown) {
+    const res = await this.app.request(`/api${path}`, {
+      method,
+      headers: { 'content-type': 'application/json', 'x-chauffr-app': this.appName, cookie: this.cookie },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const setCookie = res.headers.get('set-cookie');
+    if (setCookie) this.cookie = setCookie.split(';')[0]!;
+    return { status: res.status, body: (await res.json()) as any };
+  }
+
+  async login(email: string) {
+    const res = await this.req('POST', '/auth/dev', { email });
+    expect(res.status).toBe(200);
+    return res.body;
+  }
 }
 
-const call = (cookie: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url: string, payload?: object) =>
-  app.inject({ method, url, payload, headers: { cookie } });
+const inOneHour = () => new Date(Date.now() + 3_600_000).toISOString();
 
-test('signed-out /me returns null', async () => {
-  const res = await app.inject({ method: 'GET', url: '/api/me' });
-  assert.deepEqual(res.json(), { user: null });
+let app: App;
+let customer: Client;
+let driver: Client;
+let admin: Client;
+
+beforeEach(async () => {
+  app = createApp(openDb(':memory:'), env, noGoogle);
+  customer = new Client(app, 'customer');
+  driver = new Client(app, 'driver');
+  admin = new Client(app, 'admin');
+  await customer.login('asha@example.com');
+  await driver.login('ravi@example.com');
+  await admin.login('ops@chauffr.in');
 });
 
-test('public rate card hides the commission', async () => {
-  const card = (await app.inject({ method: 'GET', url: '/api/rate-card' })).json().rateCard;
-  assert.equal(card.baseFare, 44_900);
-  assert.equal(card.commissionBps, undefined);
-});
-
-test('customer adds phone and a car', async () => {
-  const c = await login('asha@example.com', 'customer');
-  const me = await call(c, 'PATCH', '/api/me', { name: 'Asha', phone: '98450 12345' });
-  assert.equal(me.json().user.phone, '+919845012345');
-
-  const bad = await call(c, 'POST', '/api/cars', {
-    make: 'Maruti', model: 'Swift', regNumber: 'not a reg', transmission: 'manual', carType: 'hatchback',
+async function setUpCustomerBooking(transmission: 'manual' | 'automatic' = 'manual'): Promise<Booking> {
+  await customer.req('PATCH', '/auth/me', { name: 'Asha', phone: '9876543210' });
+  const car = await customer.req('POST', '/customer/cars', {
+    make: 'Maruti',
+    model: 'Swift',
+    registration: 'ka 01 ab 1234',
+    transmission,
+    type: 'hatchback',
   });
-  assert.equal(bad.statusCode, 400);
-
-  const car = await call(c, 'POST', '/api/cars', {
-    make: 'Maruti', model: 'Swift', regNumber: 'ka 01 ab 1234', transmission: 'manual', carType: 'hatchback',
+  expect(car.body.registration).toBe('KA01AB1234');
+  const booking = await customer.req('POST', '/customer/bookings', {
+    carId: car.body.id,
+    pickupAddress: '12 MG Road, Bengaluru',
+    scheduledAt: inOneHour(),
+    bookedHours: 5,
   });
-  assert.equal(car.statusCode, 201);
-  assert.equal(car.json().car.regNumber, 'KA01AB1234');
+  expect(booking.status).toBe(201);
+  return booking.body;
+}
 
-  const list = await call(c, 'GET', '/api/cars');
-  assert.equal(list.json().cars.length, 1);
+async function approveDriver(transmission: 'manual' | 'automatic' | 'both' = 'both') {
+  await driver.req('PATCH', '/auth/me', { name: 'Ravi', phone: '9123456780' });
+  await driver.req('PUT', '/driver/profile', { licenseNumber: 'KA0120200001234', licenseExpiry: '2032-01-01', transmission });
+  const me = await driver.req('GET', '/auth/me');
+  await admin.req('POST', `/admin/drivers/${me.body.id}/status`, { status: 'approved' });
+  return me.body.id as number;
+}
 
-  const forbidden = await call(c, 'GET', '/api/driver/profile');
-  assert.equal(forbidden.statusCode, 403);
-});
-
-test('a customer account cannot sign into the driver app', async () => {
-  const res = await app.inject({
-    method: 'POST', url: '/api/auth/dev', payload: { email: 'asha@example.com', app: 'driver' },
+describe('auth', () => {
+  it('rejects requests without a session', async () => {
+    const res = await new Client(app, 'customer').req('GET', '/customer/cars');
+    expect(res.status).toBe(401);
   });
-  assert.equal(res.statusCode, 403);
+
+  it('keeps roles separate per app', async () => {
+    const asDriver = new Client(app, 'driver');
+    const res = await asDriver.req('POST', '/auth/dev', { email: 'asha@example.com' });
+    expect(res.status).toBe(403);
+  });
+
+  it('only lets listed emails into the admin app', async () => {
+    const res = await new Client(app, 'admin').req('POST', '/auth/dev', { email: 'someone@example.com' });
+    expect(res.status).toBe(403);
+  });
+
+  it('stops customers calling admin endpoints', async () => {
+    expect((await customer.req('GET', '/admin/bookings')).status).toBe(403);
+  });
 });
 
-test('driver submits details and admin approves', async () => {
-  const d = await login('ravi@example.com', 'driver');
-  assert.equal((await call(d, 'GET', '/api/driver/profile')).json().profile.status, 'incomplete');
+describe('booking flow', () => {
+  it('requires a phone number before booking', async () => {
+    const car = await customer.req('POST', '/customer/cars', {
+      make: 'Honda', model: 'City', registration: 'KA05MN4321', transmission: 'automatic', type: 'sedan',
+    });
+    const res = await customer.req('POST', '/customer/bookings', {
+      carId: car.body.id, pickupAddress: '1 Residency Road', scheduledAt: inOneHour(), bookedHours: 4,
+    });
+    expect(res.status).toBe(400);
+  });
 
-  const details = {
-    licenceNumber: 'KA01 20190001234', licenceExpiry: '2035-01-01', canManual: true, canAutomatic: true, carTypes: ['sedan', 'suv'],
-  };
-  assert.equal((await call(d, 'PUT', '/api/driver/profile', details)).statusCode, 400, 'phone required first');
-  await call(d, 'PATCH', '/api/me', { phone: '9900011122' });
-  const submitted = await call(d, 'PUT', '/api/driver/profile', details);
-  assert.equal(submitted.json().profile.status, 'pending');
+  it('runs request -> assign -> start -> end', async () => {
+    const booking = await setUpCustomerBooking();
+    expect(booking.status).toBe('requested');
+    expect(booking.startOtp).toMatch(/^\d{4}$/);
+    const driverId = await approveDriver();
 
-  assert.equal((await app.inject({ method: 'POST', url: '/api/auth/dev', payload: { email: 'ravi@example.com', app: 'admin' } })).statusCode, 403);
+    const eligible = await admin.req('GET', `/admin/bookings/${booking.id}/eligible-drivers`);
+    expect(eligible.body.map((d: any) => d.user.id)).toEqual([driverId]);
 
-  const a = await login('admin@chauffr.test', 'admin');
-  const pending = await call(a, 'GET', '/api/admin/drivers?status=pending');
-  const driver = pending.json().drivers[0];
-  assert.equal(driver.email, 'ravi@example.com');
+    const assigned = await admin.req('POST', `/admin/bookings/${booking.id}/assign`, { driverId });
+    expect(assigned.body.status).toBe('assigned');
 
-  const approve = await call(a, 'POST', `/api/admin/drivers/${driver.userId}/status`, { status: 'approved' });
-  assert.equal(approve.statusCode, 200);
-  assert.equal((await call(d, 'GET', '/api/driver/profile')).json().profile.status, 'approved');
-  assert.equal((await call(d, 'PUT', '/api/driver/profile', details)).statusCode, 409);
+    const driverView = await driver.req('GET', '/driver/bookings');
+    expect(driverView.body[0].startOtp).toBeUndefined();
 
-  const rateCard = await call(a, 'GET', '/api/admin/rate-card');
-  assert.equal(rateCard.json().rateCard.baseFare, 44_900);
+    expect((await driver.req('POST', `/driver/bookings/${booking.id}/start`, { otp: '0000' === booking.startOtp ? '1111' : '0000' })).status).toBe(400);
+    const started = await driver.req('POST', `/driver/bookings/${booking.id}/start`, { otp: booking.startOtp });
+    expect(started.body.status).toBe('in_progress');
+
+    const ended = await driver.req('POST', `/driver/bookings/${booking.id}/end`);
+    expect(ended.body.status).toBe('completed');
+    expect(ended.body.fare.billedHours).toBe(4);
+    expect(ended.body.fare.platformFee + ended.body.fare.driverEarning).toBe(ended.body.fare.total);
+  });
+
+  it('will not assign a driver who cannot drive the car', async () => {
+    const booking = await setUpCustomerBooking('manual');
+    const driverId = await approveDriver('automatic');
+    const res = await admin.req('POST', `/admin/bookings/${booking.id}/assign`, { driverId });
+    expect(res.status).toBe(400);
+  });
+
+  it('will not double-book a driver', async () => {
+    const first = await setUpCustomerBooking();
+    const driverId = await approveDriver();
+    await admin.req('POST', `/admin/bookings/${first.id}/assign`, { driverId });
+    const cars = await customer.req('GET', '/customer/cars');
+    const second = await customer.req('POST', '/customer/bookings', {
+      carId: cars.body[0].id, pickupAddress: '12 MG Road, Bengaluru', scheduledAt: inOneHour(), bookedHours: 4,
+    });
+    const res = await admin.req('POST', `/admin/bookings/${second.body.id}/assign`, { driverId });
+    expect(res.status).toBe(409);
+  });
+
+  it('stops other drivers seeing or starting the trip', async () => {
+    const booking = await setUpCustomerBooking();
+    const driverId = await approveDriver();
+    await admin.req('POST', `/admin/bookings/${booking.id}/assign`, { driverId });
+    const other = new Client(app, 'driver');
+    await other.login('other@example.com');
+    const res = await other.req('POST', `/driver/bookings/${booking.id}/start`, { otp: booking.startOtp });
+    expect(res.status).toBe(404);
+  });
+
+  it('lets customers cancel before the trip starts but not after', async () => {
+    const booking = await setUpCustomerBooking();
+    const driverId = await approveDriver();
+    await admin.req('POST', `/admin/bookings/${booking.id}/assign`, { driverId });
+    await driver.req('POST', `/driver/bookings/${booking.id}/start`, { otp: booking.startOtp });
+    const res = await customer.req('POST', `/customer/bookings/${booking.id}/cancel`, {});
+    expect(res.status).toBe(409);
+  });
+
+  it('keeps the rate card a booking was made with', async () => {
+    const booking = await setUpCustomerBooking();
+    const card = (await admin.req('GET', '/admin/rate-card')).body;
+    await admin.req('PUT', '/admin/rate-card', { ...card, baseFare: card.baseFare * 2 });
+    const driverId = await approveDriver();
+    await admin.req('POST', `/admin/bookings/${booking.id}/assign`, { driverId });
+    await driver.req('POST', `/driver/bookings/${booking.id}/start`, { otp: booking.startOtp });
+    const ended = await driver.req('POST', `/driver/bookings/${booking.id}/end`);
+    expect(ended.body.fare.baseFare).toBe(card.baseFare);
+  });
 });
 
-test('logout ends the session', async () => {
-  const c = await login('asha@example.com', 'customer');
-  await call(c, 'POST', '/api/auth/logout', {});
-  assert.deepEqual((await call(c, 'GET', '/api/me')).json(), { user: null });
+describe('drivers', () => {
+  it('cannot go online until approved', async () => {
+    await driver.req('PUT', '/driver/profile', { licenseNumber: 'KA0120200001234', licenseExpiry: '2032-01-01', transmission: 'manual' });
+    expect((await driver.req('POST', '/driver/online', { online: true })).status).toBe(403);
+  });
 });

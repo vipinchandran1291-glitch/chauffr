@@ -1,54 +1,56 @@
-/** All amounts are integer paise. A copy of the rate card is stored on each booking. */
-export interface RateCard {
-  baseFare: number;
-  baseMinutes: number;
-  extraPer30Min: number;
-  nightCharge: number;
-  /** Night window in IST hours, e.g. 22 → 6. */
-  nightStartHour: number;
-  nightEndHour: number;
-  /** Platform share in basis points, 2000 = 20%. */
-  commissionBps: number;
+import type { FareBreakdown, RateCard } from './types.ts';
+
+const IST_OFFSET_MIN = 330;
+const NIGHT_START_HOUR = 22;
+const NIGHT_END_HOUR = 6;
+const STEP_MS = 15 * 60_000;
+
+function isNightIST(t: number): boolean {
+  const istMinutes = Math.floor(t / 60_000) + IST_OFFSET_MIN;
+  const hour = Math.floor((((istMinutes % 1440) + 1440) % 1440) / 60);
+  return hour >= NIGHT_START_HOUR || hour < NIGHT_END_HOUR;
 }
 
-export interface FareBreakdown {
-  minutes: number;
-  extraBlocks: number;
-  base: number;
-  extra: number;
-  night: number;
-  total: number;
-  commission: number;
-  driverEarning: number;
-}
-
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
-const IST_OFFSET = 330 * MINUTE;
-
-export function overlapsNight(start: Date, end: Date, startHour: number, endHour: number): boolean {
-  const s = start.getTime() + IST_OFFSET;
-  const e = end.getTime() + IST_OFFSET;
-  // Start from the previous IST day so a window that began yesterday evening is included.
-  for (let day = Math.floor(s / DAY) * DAY - DAY; day <= e; day += DAY) {
-    const windowStart = day + startHour * HOUR;
-    const windowEnd = day + (endHour <= startHour ? DAY : 0) + endHour * HOUR;
-    if (s < windowEnd && e > windowStart) return true;
+/** True if any part of [start, end) falls between 22:00 and 06:00 IST. */
+export function overlapsNight(start: Date, end: Date): boolean {
+  for (let t = start.getTime(); t < end.getTime(); t += STEP_MS) {
+    if (isNightIST(t)) return true;
   }
-  return false;
+  return isNightIST(end.getTime() - 1);
 }
 
-export function computeFare(card: RateCard, startedAt: Date, endedAt: Date): FareBreakdown {
-  const minutes = Math.max(0, Math.ceil((endedAt.getTime() - startedAt.getTime()) / MINUTE));
-  const extraBlocks = Math.max(0, Math.ceil((minutes - card.baseMinutes) / 30));
-  const extra = extraBlocks * card.extraPer30Min;
-  const night = overlapsNight(startedAt, endedAt, card.nightStartHour, card.nightEndHour) ? card.nightCharge : 0;
-  const total = card.baseFare + extra + night;
-  const commission = Math.round((total * card.commissionBps) / 10_000);
-  return { minutes, extraBlocks, base: card.baseFare, extra, night, total, commission, driverEarning: total - commission };
+function breakdown(card: RateCard, hours: number, night: boolean): FareBreakdown {
+  const billedHours = Math.max(card.minHours, hours);
+  const extraHoursFare = (billedHours - card.minHours) * card.extraHourRate;
+  const nightCharge = night ? card.nightCharge : 0;
+  const total = card.baseFare + extraHoursFare + nightCharge;
+  const platformFee = Math.round((total * card.commissionPct) / 100);
+  return {
+    minHours: card.minHours,
+    billedHours,
+    baseFare: card.baseFare,
+    extraHoursFare,
+    nightCharge,
+    total,
+    platformFee,
+    driverEarning: total - platformFee,
+  };
 }
 
-export function formatINR(paise: number): string {
-  return '₹' + (paise / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+/** Fare shown at booking time, from the hours the customer asked for. */
+export function estimateFare(card: RateCard, bookedHours: number, startAt: Date): FareBreakdown {
+  const end = new Date(startAt.getTime() + bookedHours * 3_600_000);
+  return breakdown(card, bookedHours, overlapsNight(startAt, end));
+}
+
+/** Fare charged at trip end, from the actual start and end times. */
+export function finalFare(card: RateCard, startedAt: Date, endedAt: Date): FareBreakdown {
+  const minutes = Math.max(0, (endedAt.getTime() - startedAt.getTime()) / 60_000);
+  const hours = Math.ceil(Math.max(0, minutes - card.graceMinutes) / 60);
+  return breakdown(card, hours, overlapsNight(startedAt, endedAt));
+}
+
+export function formatRupees(paise: number): string {
+  const digits = paise % 100 === 0 ? 0 : 2;
+  return '₹' + (paise / 100).toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }

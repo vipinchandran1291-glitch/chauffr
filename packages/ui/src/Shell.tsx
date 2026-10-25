@@ -1,35 +1,64 @@
 import type { ReactNode } from 'react';
-import { Logo } from './Icon';
-import { useSession } from './session';
+import { useSession } from './session.tsx';
 
-export function Shell({ section, wide, children }: { section?: string; wide?: boolean; children: ReactNode }) {
+export interface Tab<T extends string> {
+  id: T;
+  label: string;
+}
+
+export function Shell<T extends string>({
+  title,
+  tabs,
+  active,
+  onTab,
+  children,
+}: {
+  title: string;
+  tabs?: Tab<NoInfer<T>>[];
+  active?: T;
+  onTab?(id: T): void;
+  children: ReactNode;
+}) {
   const { user, logout } = useSession();
-  const initial = (user?.name || user?.email || '?').charAt(0).toUpperCase();
   return (
     <div className="shell">
       <header className="topbar">
-        <div className="topbar-title">
-          <Logo size={28} />
-          {section && <small>{section}</small>}
-        </div>
-        {user && (
-          <div className="topbar-user">
-            <span className="avatar" title={user.email}>
-              {user.avatarUrl ? <img src={user.avatarUrl} alt="" referrerPolicy="no-referrer" /> : initial}
-            </span>
-            <button type="button" className="link" onClick={() => void logout()}>Sign out</button>
-          </div>
-        )}
+        <strong>{title}</strong>
+        <span className="muted small">{user.name}</span>
+        <button className="link" onClick={logout}>
+          Sign out
+        </button>
       </header>
-      <main className={wide ? 'content wide' : 'content'}>{children}</main>
+      {tabs && (
+        <nav className="tabs">
+          {tabs.map((t) => (
+            <button key={t.id} className={t.id === active ? 'tab active' : 'tab'} onClick={() => onTab?.(t.id)}>
+              {t.label}
+            </button>
+          ))}
+        </nav>
+      )}
+      <main className="page">{children}</main>
     </div>
   );
 }
 
-export function Splash() {
-  return (
-    <div className="auth-panel" style={{ minHeight: '100vh' }}>
-      <Logo />
-    </div>
-  );
+const STATUS_LABELS: Record<string, string> = {
+  requested: 'Finding driver',
+  assigned: 'Driver assigned',
+  in_progress: 'On trip',
+  completed: 'Completed',
+  cancelled: 'Cancelled',
+  pending: 'Pending review',
+  approved: 'Approved',
+  rejected: 'Rejected',
+  suspended: 'Suspended',
+};
+
+export function StatusBadge({ status }: { status: string }) {
+  return <span className={`badge badge-${status}`}>{STATUS_LABELS[status] ?? status}</span>;
+}
+
+export function formatWhen(iso: string): string {
+  return new Date(iso).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
 }

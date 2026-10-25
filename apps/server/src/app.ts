@@ -1,44 +1,28 @@
-import cookie from '@fastify/cookie';
-import Fastify, { type FastifyError } from 'fastify';
-import { ZodError } from 'zod';
-import { registerAuth } from './auth';
-import { runMigrations } from './db';
-import { ensureDefaultRateCard } from './db/seed';
-import { env } from './env';
-import { adminRoutes } from './routes/admin';
-import { authRoutes } from './routes/auth';
-import { carRoutes } from './routes/cars';
-import { driverRoutes } from './routes/driver';
-import { pricingRoutes } from './routes/pricing';
+import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+import type { AppEnv, GoogleVerifier } from './auth.ts';
+import type { DB } from './db.ts';
+import type { Env } from './env.ts';
+import { adminRoutes } from './routes/admin.ts';
+import { authRoutes } from './routes/auth.ts';
+import { customerRoutes } from './routes/customer.ts';
+import { driverRoutes } from './routes/driver.ts';
 
-export async function buildApp() {
-  runMigrations();
-  ensureDefaultRateCard();
+export function createApp(db: DB, env: Env, verifyGoogle: GoogleVerifier) {
+  const app = new Hono<AppEnv>().basePath('/api');
 
-  const app = Fastify({
-    logger: process.env.NODE_ENV === 'test' ? false : { level: env.isProd ? 'info' : 'debug' },
-    trustProxy: true, // behind Nginx
+  app.get('/health', (c) => c.json({ ok: true }));
+  app.route('/auth', authRoutes(db, env, verifyGoogle));
+  app.route('/customer', customerRoutes(db));
+  app.route('/driver', driverRoutes(db));
+  app.route('/admin', adminRoutes(db));
+
+  app.notFound((c) => c.json({ error: 'Not found' }, 404));
+  app.onError((err, c) => {
+    if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
+    console.error(err);
+    return c.json({ error: 'Something went wrong' }, 500);
   });
-
-  await app.register(cookie);
-  registerAuth(app);
-
-  app.setErrorHandler((err: FastifyError, req, reply) => {
-    if (err instanceof ZodError) {
-      const message = err.issues.map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message));
-      return reply.code(400).send({ message: message.join('; ') });
-    }
-    if (err.statusCode && err.statusCode < 500) return reply.code(err.statusCode).send({ message: err.message });
-    req.log.error(err);
-    return reply.code(500).send({ message: 'Something went wrong' });
-  });
-
-  app.get('/api/health', async () => ({ ok: true }));
-  await app.register(authRoutes, { prefix: '/api' });
-  await app.register(pricingRoutes, { prefix: '/api' });
-  await app.register(carRoutes, { prefix: '/api/cars' });
-  await app.register(driverRoutes, { prefix: '/api/driver' });
-  await app.register(adminRoutes, { prefix: '/api/admin' });
 
   return app;
 }

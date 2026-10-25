@@ -1,34 +1,63 @@
 import { useEffect, useState } from 'react';
-import { api, errorMessage, formatINR, type RateCard } from '@chauffr/shared';
+import type { RateCard } from '@chauffr/shared';
+import { useAction, useLoad, useSession } from '@chauffr/ui';
 
-type ActiveRateCard = RateCard & { name: string };
+/** Fields shown in rupees in the form but stored in paise. */
+const MONEY: (keyof RateCard)[] = ['baseFare', 'extraHourRate', 'nightCharge'];
+
+const FIELDS: { key: keyof RateCard; label: string }[] = [
+  { key: 'minHours', label: 'Minimum hours' },
+  { key: 'baseFare', label: 'Fare for minimum hours (₹)' },
+  { key: 'extraHourRate', label: 'Each extra hour (₹)' },
+  { key: 'nightCharge', label: 'Night charge, 10pm-6am (₹)' },
+  { key: 'graceMinutes', label: 'Grace minutes before next hour' },
+  { key: 'commissionPct', label: 'Chauffr commission (%)' },
+];
 
 export function RateCardPanel() {
-  const [card, setCard] = useState<ActiveRateCard | null>(null);
-  const [error, setError] = useState('');
+  const { api } = useSession();
+  const { data: card, reload } = useLoad(() => api<RateCard>('GET', '/admin/rate-card'), [api]);
+  const [form, setForm] = useState<Record<string, string>>({});
+  const [saved, setSaved] = useState(false);
+  const action = useAction();
 
   useEffect(() => {
-    api.get<{ rateCard: ActiveRateCard | null }>('/api/admin/rate-card').then(
-      (r) => setCard(r.rateCard),
-      (err) => setError(errorMessage(err)),
+    if (!card) return;
+    setForm(
+      Object.fromEntries(FIELDS.map(({ key }) => [key, String(MONEY.includes(key) ? card[key] / 100 : card[key])])),
     );
-  }, []);
+  }, [card]);
 
-  if (error) return <p className="alert danger small">{error}</p>;
-  if (!card) return null;
+  if (!card) return <p className="muted">Loading...</p>;
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaved(false);
+    const body = Object.fromEntries(
+      FIELDS.map(({ key }) => [key, MONEY.includes(key) ? Math.round(Number(form[key]) * 100) : Number(form[key])]),
+    );
+    action.run(async () => {
+      await api('PUT', '/admin/rate-card', body);
+      reload();
+      setSaved(true);
+    });
+  };
 
   return (
-    <section className="card stack">
-      <div className="card-header">
-        <h2>Active rate card</h2>
-        <span className="muted small">{card.name}</span>
-      </div>
-      <div className="stats">
-        <div className="stat"><span className="label">First {card.baseMinutes / 60} hrs</span><span className="value">{formatINR(card.baseFare)}</span></div>
-        <div className="stat"><span className="label">Per extra 30 min</span><span className="value">{formatINR(card.extraPer30Min)}</span></div>
-        <div className="stat"><span className="label">Night ({card.nightStartHour}:00–{card.nightEndHour}:00)</span><span className="value">{formatINR(card.nightCharge)}</span></div>
-        <div className="stat"><span className="label">Commission</span><span className="value">{card.commissionBps / 100}%</span></div>
-      </div>
-    </section>
+    <form className="card stack" onSubmit={submit}>
+      <h2>Rate card</h2>
+      <p className="small muted">Changes apply to new bookings only. Existing bookings keep the rates they were booked at.</p>
+      {FIELDS.map(({ key, label }) => (
+        <label key={key}>
+          {label}
+          <input type="number" min={0} step="any" required value={form[key] ?? ''} onChange={(e) => setForm({ ...form, [key]: e.target.value })} />
+        </label>
+      ))}
+      {action.error && <p className="error">{action.error}</p>}
+      {saved && <p className="small" style={{ color: 'var(--success)' }}>Saved.</p>}
+      <button type="submit" disabled={action.busy}>
+        Save rate card
+      </button>
+    </form>
   );
 }

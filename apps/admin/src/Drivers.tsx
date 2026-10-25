@@ -1,144 +1,91 @@
-import { useCallback, useEffect, useState } from 'react';
-import { api, CAR_TYPE_LABELS, DRIVER_STATUSES, errorMessage, type AdminDriver, type DriverStatus } from '@chauffr/shared';
-import { Icon } from '@chauffr/ui';
+import { useState } from 'react';
+import type { AdminDriver, DriverStatus } from '@chauffr/shared';
+import { StatusBadge, useAction, useLoad, useSession } from '@chauffr/ui';
 
-type Filter = DriverStatus | 'all';
-const FILTERS: Filter[] = ['pending', ...DRIVER_STATUSES.filter((s) => s !== 'pending'), 'all'];
+const FILTERS: { id: DriverStatus | ''; label: string }[] = [
+  { id: 'pending', label: 'Pending review' },
+  { id: 'approved', label: 'Approved' },
+  { id: 'rejected', label: 'Rejected' },
+  { id: 'suspended', label: 'Suspended' },
+  { id: '', label: 'All' },
+];
 
 export function Drivers() {
-  const [filter, setFilter] = useState<Filter>('pending');
-  const [drivers, setDrivers] = useState<AdminDriver[] | null>(null);
-  const [error, setError] = useState('');
-
-  // The driver list is small at this stage, so load everyone once and filter in the browser.
-  const load = useCallback(async () => {
-    setError('');
-    try {
-      setDrivers((await api.get<{ drivers: AdminDriver[] }>('/api/admin/drivers')).drivers);
-    } catch (err) {
-      setError(errorMessage(err));
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  async function setStatus(driver: AdminDriver, status: 'approved' | 'rejected' | 'suspended') {
-    let reason: string | undefined;
-    if (status !== 'approved') {
-      reason = prompt(`Reason for ${status === 'rejected' ? 'rejecting' : 'suspending'} ${driver.name}? The driver will see this.`)?.trim();
-      if (!reason) return;
-    } else if (!confirm(`Approve ${driver.name}? Make sure you've checked their licence and ID.`)) {
-      return;
-    }
-    try {
-      await api.post(`/api/admin/drivers/${driver.userId}/status`, { status, reason });
-      await load();
-    } catch (err) {
-      setError(errorMessage(err));
-    }
-  }
-
-  const count = (f: Filter) => (drivers ?? []).filter((d) => f === 'all' || d.status === f).length;
-  const shown = (drivers ?? []).filter((d) => filter === 'all' || d.status === filter);
+  const { api } = useSession();
+  const [status, setStatus] = useState<DriverStatus | ''>('pending');
+  const { data: drivers, error, reload } = useLoad(
+    () => api<AdminDriver[]>('GET', `/admin/drivers${status ? `?status=${status}` : ''}`),
+    [api, status],
+  );
 
   return (
-    <>
-      <div className="stats">
-        <div className={`card stat ${count('pending') > 0 ? 'highlight' : ''}`}>
-          <span className="label">Waiting for review</span>
-          <span className="value">{drivers ? count('pending') : '—'}</span>
-        </div>
-        <div className="card stat">
-          <span className="label">Approved drivers</span>
-          <span className="value">{drivers ? count('approved') : '—'}</span>
-        </div>
-        <div className="card stat">
-          <span className="label">Signed up, no details yet</span>
-          <span className="value">{drivers ? count('incomplete') : '—'}</span>
-        </div>
-        <div className="card stat">
-          <span className="label">All drivers</span>
-          <span className="value">{drivers ? count('all') : '—'}</span>
-        </div>
+    <div className="stack">
+      <div className="row">
+        {FILTERS.map((f) => (
+          <button key={f.id} className={f.id === status ? '' : 'secondary'} onClick={() => setStatus(f.id)}>
+            {f.label}
+          </button>
+        ))}
       </div>
+      {error && <p className="error">{error}</p>}
+      {drivers && !drivers.length && <p className="empty">No drivers.</p>}
+      {drivers?.map((d) => (
+        <DriverCard key={d.user.id} driver={d} onChange={reload} />
+      ))}
+    </div>
+  );
+}
 
-      <section className="card stack">
-        <div className="card-header">
-          <h2>Drivers</h2>
-          <div className="tabs">
-            {FILTERS.map((f) => (
-              <button key={f} type="button" className={f === filter ? 'active' : ''} onClick={() => setFilter(f)}>
-                {f} <span className="count">{drivers ? count(f) : ''}</span>
+function DriverCard({ driver: { user, profile }, onChange }: { driver: AdminDriver; onChange(): void }) {
+  const { api } = useSession();
+  const action = useAction();
+
+  const setStatus = (status: DriverStatus) => {
+    const note = status === 'approved' ? '' : prompt(`Note for the driver (${status})`) ?? undefined;
+    if (note === undefined) return;
+    action.run(async () => {
+      await api('POST', `/admin/drivers/${user.id}/status`, { status, note: note || undefined });
+      onChange();
+    });
+  };
+
+  return (
+    <div className="card">
+      <div className="spread">
+        <h3>{user.name}</h3>
+        {profile ? <StatusBadge status={profile.status} /> : <span className="badge">No profile yet</span>}
+      </div>
+      <p className="small muted">
+        {user.email}
+        {user.phone && ` - +91 ${user.phone}`}
+      </p>
+      {profile && (
+        <>
+          <p className="small">
+            Licence {profile.licenseNumber}, valid until {profile.licenseExpiry} - drives {profile.transmission}
+            {profile.status === 'approved' && ` - ${profile.isOnline ? 'online' : 'offline'}`}
+          </p>
+          {profile.adminNote && <p className="small muted">Note: {profile.adminNote}</p>}
+          <div className="row">
+            {profile.status !== 'approved' && (
+              <button onClick={() => setStatus('approved')} disabled={action.busy}>
+                Approve
               </button>
-            ))}
+            )}
+            {profile.status === 'pending' && (
+              <button className="danger" onClick={() => setStatus('rejected')} disabled={action.busy}>
+                Reject
+              </button>
+            )}
+            {profile.status === 'approved' && (
+              <button className="danger" onClick={() => setStatus('suspended')} disabled={action.busy}>
+                Suspend
+              </button>
+            )}
           </div>
-        </div>
-        {error && <p className="alert danger small">{error}</p>}
-        {drivers === null ? (
-          <p className="muted">Loading…</p>
-        ) : shown.length === 0 ? (
-          <div className="empty">
-            <Icon name="users" size={28} />
-            No {filter === 'all' ? '' : filter} drivers.
-          </div>
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Driver</th>
-                  <th>Licence</th>
-                  <th>Can drive</th>
-                  <th>Status</th>
-                  <th>Signed up</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {shown.map((d) => (
-                  <tr key={d.userId}>
-                    <td>
-                      <strong>{d.name || '—'}</strong>
-                      <div className="muted small">{d.email}</div>
-                      <div className="muted small">{d.phone ?? 'No phone'}</div>
-                    </td>
-                    <td>
-                      {d.licenceNumber ?? '—'}
-                      {d.licenceExpiry && <div className="muted small">till {d.licenceExpiry}</div>}
-                    </td>
-                    <td>
-                      {[d.canManual && 'Manual', d.canAutomatic && 'Automatic'].filter(Boolean).join(', ') || '—'}
-                      <div className="muted small">{d.carTypes.map((t) => CAR_TYPE_LABELS[t]).join(', ')}</div>
-                    </td>
-                    <td>
-                      <span className={`badge ${d.status}`}>{d.status}</span>
-                      {d.rejectionReason && <div className="muted small">{d.rejectionReason}</div>}
-                    </td>
-                    <td className="muted">{new Date(d.createdAt).toLocaleDateString('en-IN')}</td>
-                    <td>
-                      <div className="row" style={{ justifyContent: 'flex-end' }}>
-                        {(d.status === 'pending' || d.status === 'suspended' || d.status === 'rejected') && d.licenceNumber && (
-                          <button type="button" className="success sm" onClick={() => void setStatus(d, 'approved')}>
-                            <Icon name="check" size={16} /> Approve
-                          </button>
-                        )}
-                        {d.status === 'pending' && (
-                          <button type="button" className="danger sm" onClick={() => void setStatus(d, 'rejected')}>Reject</button>
-                        )}
-                        {d.status === 'approved' && (
-                          <button type="button" className="danger sm" onClick={() => void setStatus(d, 'suspended')}>Suspend</button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-    </>
+        </>
+      )}
+      {action.error && <p className="error">{action.error}</p>}
+    </div>
   );
 }

@@ -1,23 +1,17 @@
 {
   "name": "@chauffr/ui",
-  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "exports": {
-    ".": "./src/index.ts",
-    "./styles.css": "./src/styles.css"
-  },
+  "exports": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc -p ."
   },
   "dependencies": {
-    "@chauffr/shared": "^0.1.0"
-  },
-  "peerDependencies": {
-    "react": "^19.0.0"
+    "@chauffr/shared": "*",
+    "react": "^19.3.1"
   },
   "devDependencies": {
     "@types/react": "^19.3.0",
-    "typescript": "^7.0.2"
+    "vite": "^8.3.5"
   }
 }

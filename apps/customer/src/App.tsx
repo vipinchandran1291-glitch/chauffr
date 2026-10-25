@@ -1,28 +1,47 @@
-import { LoginScreen, ProfileForm, Shell, Splash, useSession, type TrustPoint } from '@chauffr/ui';
-import { Home } from './Home';
+import { useEffect, useState } from 'react';
+import { createApi, SessionGate, Shell, useSession } from '@chauffr/ui';
+import { BookTab } from './BookTab.tsx';
+import { CarsTab } from './CarsTab.tsx';
+import { TripsTab } from './TripsTab.tsx';
 
-const POINTS: TrustPoint[] = [
-  { icon: 'shieldCheck', title: 'Verified drivers', text: 'Licence and ID checked, and approved by our team before their first trip.' },
-  { icon: 'lock', title: 'OTP-secured handover', text: 'The trip starts only when you share your code with the driver.' },
-  { icon: 'rupee', title: 'Clear hourly pricing', text: 'See the fare before you book. Pay after the trip.' },
-];
+const api = createApi('customer');
+
+type TabId = 'book' | 'trips' | 'cars';
 
 export function App() {
-  const { user, loading } = useSession();
-  if (loading) return <Splash />;
-  if (!user) {
-    return (
-      <LoginScreen
-        app="customer"
-        title="A trusted driver for your car"
-        tagline="Book a verified driver by the hour, anywhere in Bangalore. You keep your car, we bring the driver."
-        points={POINTS}
-      />
-    );
-  }
   return (
-    <Shell>
-      {user.phone ? <Home /> : <ProfileForm intro="Your driver will call this number when they arrive." />}
+    <SessionGate api={api} title="Chauffr" tagline="A trusted driver for your car, in minutes.">
+      <Home />
+    </SessionGate>
+  );
+}
+
+function Home() {
+  const { api } = useSession();
+  const [tab, setTab] = useState<TabId>('book');
+  const [hasCars, setHasCars] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    api<unknown[]>('GET', '/customer/cars').then((cars) => {
+      setHasCars(cars.length > 0);
+      if (!cars.length) setTab('cars');
+    });
+  }, [api]);
+
+  return (
+    <Shell<TabId>
+      title="Chauffr"
+      tabs={[
+        { id: 'book', label: 'Book' },
+        { id: 'trips', label: 'My trips' },
+        { id: 'cars', label: 'My cars' },
+      ]}
+      active={tab}
+      onTab={setTab}
+    >
+      {tab === 'book' && <BookTab onBooked={() => setTab('trips')} onNeedCar={() => setTab('cars')} />}
+      {tab === 'trips' && <TripsTab />}
+      {tab === 'cars' && <CarsTab firstCar={hasCars === false} onAdded={() => (setHasCars(true), setTab('book'))} />}
     </Shell>
   );
 }

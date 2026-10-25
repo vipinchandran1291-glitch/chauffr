@@ -10,11 +10,12 @@
     "dev": "concurrently -k -n api,customer,driver,admin -c blue,green,magenta,yellow \"npm run dev -w @chauffr/server\" \"npm run dev -w @chauffr/customer\" \"npm run dev -w @chauffr/driver\" \"npm run dev -w @chauffr/admin\"",
     "build": "npm run build -w @chauffr/customer -w @chauffr/driver -w @chauffr/admin",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm test --workspaces --if-present",
-    "db:generate": "npm run db:generate -w @chauffr/server"
+    "test": "npm test --workspaces --if-present"
   },
   "devDependencies": {
+    "@types/node": "^26.6.5",
     "concurrently": "^10.0.6",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
   }
 }

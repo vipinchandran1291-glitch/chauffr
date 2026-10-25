@@ -1,68 +1,54 @@
 # Chauffr
 
-On-demand drivers for the customer's own car, starting in Bangalore.
+On-demand drivers who drive the customer's own car. Launch city: Bengaluru.
 
-```
-apps/server     Fastify API, SQLite (better-sqlite3 + Drizzle)
-apps/customer   Customer PWA          http://localhost:5173
-apps/driver     Driver PWA            http://localhost:5174
-apps/admin      Admin dashboard       http://localhost:5175
-packages/shared Types, pricing, validation, API client (used by server and apps)
-packages/ui     Shared React pieces: session, Google sign-in, layout, styles
-deploy/         Nginx, systemd and backup files for the VPS
-```
+## Layout
+
+| Path | What |
+| --- | --- |
+| `apps/server` | Node API (Hono, built-in `node:sqlite`, Google sign-in) |
+| `apps/customer` | Customer PWA: cars, booking, trips (port 5173) |
+| `apps/driver` | Driver PWA: onboarding, online toggle, start/end trips (port 5174) |
+| `apps/admin` | Ops dashboard: approve drivers, assign bookings, rate card (port 5175) |
+| `packages/shared` | Types, pricing and validation used by server and apps |
+| `packages/ui` | Shared React pieces: API client, sign-in, layout, styles |
 
 ## Run locally
 
-Needs Node 22+.
+Requires Node 24+.
 
-```sh
+```bash
 npm install
-cp apps/server/.env.example apps/server/.env   # then edit it
-npm run dev                                    # API + all three apps
+cp apps/server/.env.example apps/server/.env   # then set ADMIN_EMAILS
+npm run dev
 ```
 
-With `DEV_LOGIN=1` in `apps/server/.env`, each app shows an email-only sign-in so you can test without Google.
-Any email in `ADMIN_EMAILS` can sign into the admin app.
+With `DEV_LOGIN=true` you can sign in with any email. Emails in `ADMIN_EMAILS`
+can only use the admin dashboard. To use real Google sign-in, set
+`GOOGLE_CLIENT_ID` and add `http://localhost:5173`, `:5174` and `:5175` as
+authorized JavaScript origins on the OAuth client.
 
-Other commands: `npm test`, `npm run typecheck`, `npm run build`.
-
-### Google sign-in
-
-1. Google Cloud Console → APIs & Services → Credentials → Create OAuth client ID → Web application.
-2. Authorized JavaScript origins: `http://localhost:5173`, `http://localhost:5174`, `http://localhost:5175`, plus your production domains.
-3. Put the client ID in `GOOGLE_CLIENT_ID` in `apps/server/.env`. The apps read it from `/api/config`.
-
-One Google account has one role. Someone who is both a customer and a driver needs two accounts.
-
-## Database
-
-Tables are defined in `apps/server/src/db/schema.ts`. Migrations are applied automatically when the server starts.
-After changing the schema, run `npm run db:generate` and commit the new file in `apps/server/drizzle/`.
-
-Money is stored as integer paise and time as epoch milliseconds. Each booking stores a copy of the rate card it was priced with.
-The fare formula lives in `packages/shared/src/pricing.ts`.
-
-## Deploy (Ubuntu VPS)
-
-```sh
-sudo apt install -y nginx certbot python3-certbot-nginx sqlite3
-# Node 22+ from NodeSource or nvm
-sudo useradd -r -m -d /srv/chauffr chauffr
-sudo -u chauffr git clone <repo> /srv/chauffr && cd /srv/chauffr
-sudo -u chauffr npm ci && sudo -u chauffr npm run build
-sudo -u chauffr cp apps/server/.env.example apps/server/.env   # set GOOGLE_CLIENT_ID, ADMIN_EMAILS; remove DEV_LOGIN
-sudo cp deploy/chauffr.service /etc/systemd/system/ && sudo systemctl enable --now chauffr
-sudo cp deploy/nginx.conf /etc/nginx/sites-available/chauffr   # edit domains, then follow the comments in the file
+```bash
+npm test         # pricing + API flow tests
+npm run typecheck
+npm run build    # builds the three apps into apps/*/dist
 ```
 
-To update: `git pull && npm ci && npm run build && sudo systemctl restart chauffr`.
-Set up `deploy/backup.sh` as a nightly cron job.
+## How a booking works
 
-## Roadmap
+1. The customer adds a car (manual/automatic matters) and requests a driver for N hours.
+   The fare estimate comes from the current rate card, which is saved onto the booking.
+2. Ops assigns an approved driver who can drive that transmission and is free at that time.
+3. The customer sees the driver and a 4-digit start code. The driver enters it to start the trip.
+4. The driver ends the trip. The fare is billed from actual start/end time: minimum hours,
+   then per extra hour after a grace period, plus a night charge if any part falls
+   between 22:00 and 06:00 IST. Chauffr's commission is split out of the total.
 
-1. **Foundation** (done): monorepo, schema, Google sign-in with roles, phone number, cars, driver details and approval.
-2. Booking flow: book now or later, broadcast to matching drivers, manual assignment, start OTP, end trip, fare.
-3. Payments: Razorpay checkout and webhooks, cash, driver ledger, weekly payouts.
-4. Driver onboarding: document upload, phone OTP verification, push notifications.
-5. Pilot with 10–20 verified drivers.
+Money is stored as integer paise everywhere.
+
+## Not built yet
+
+- Razorpay payment at trip end and the driver payout ledger
+- Drivers accepting trips themselves, web push notifications
+- Production deploy (nginx, systemd, backups)
+- Driver document uploads; ops currently checks documents offline

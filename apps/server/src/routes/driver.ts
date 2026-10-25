@@ -1,64 +1,93 @@
-import type { FastifyInstance } from 'fastify';
-import { eq } from 'drizzle-orm';
+import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import { CAR_TYPES } from '@chauffr/shared';
-import { requireRole } from '../auth';
-import { db } from '../db';
-import { drivers } from '../db/schema';
-import { httpError } from '../errors';
+import { driverProfileInput, finalFare, type RateCard } from '@chauffr/shared';
+import { requireUser, type AppEnv } from '../auth.ts';
+import type { DB } from '../db.ts';
+import { BOOKING_SELECT, conflict, findBooking, idParam, notFound, parseBody, rowToBooking, rowToDriverProfile } from '../model.ts';
 
-export const driverProfileColumns = {
-  userId: drivers.userId,
-  status: drivers.status,
-  licenceNumber: drivers.licenceNumber,
-  licenceExpiry: drivers.licenceExpiry,
-  canManual: drivers.canManual,
-  canAutomatic: drivers.canAutomatic,
-  carTypes: drivers.carTypes,
-  rejectionReason: drivers.rejectionReason,
-  reviewedAt: drivers.reviewedAt,
-  createdAt: drivers.createdAt,
-};
+export function driverRoutes(db: DB) {
+  const r = new Hono<AppEnv>();
+  r.use(requireUser(db, ['driver']));
 
-const profileInput = z
-  .object({
-    licenceNumber: z
-      .string()
-      .transform((s) => s.toUpperCase().replace(/[\s-]/g, ''))
-      .refine((s) => /^[A-Z0-9]{10,20}$/.test(s), 'Enter your driving licence number as printed'),
-    licenceExpiry: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/)
-      .refine((d) => new Date(d) > new Date(), 'Licence has expired'),
-    canManual: z.boolean(),
-    canAutomatic: z.boolean(),
-    carTypes: z.array(z.enum(CAR_TYPES)).min(1, 'Pick at least one car type'),
-  })
-  .refine((p) => p.canManual || p.canAutomatic, 'Pick at least one transmission');
+  const getProfile = (userId: number) => {
+    const row = db.prepare('SELECT * FROM driver_profiles WHERE user_id = ?').get(userId);
+    return row ? rowToDriverProfile(row) : null;
+  };
 
-function getProfile(userId: number) {
-  const profile = db.select(driverProfileColumns).from(drivers).where(eq(drivers.userId, userId)).get();
-  if (!profile) throw httpError(404, 'Driver profile not found');
-  return profile;
-}
+  const ownBooking = (c: { get(k: 'user'): { id: number } }, id: number) => {
+    const row = findBooking(db, id);
+    if (row.driver_id !== c.get('user').id) throw notFound('Booking');
+    return row;
+  };
 
-export async function driverRoutes(app: FastifyInstance) {
-  app.addHook('preHandler', requireRole('driver'));
+  r.get('/profile', (c) => c.json(getProfile(c.get('user').id)));
 
-  app.get('/profile', async (req) => ({ profile: getProfile(req.user!.id) }));
-
-  // Submitting (or resubmitting after rejection) puts the driver back in the review queue.
-  app.put('/profile', async (req) => {
-    const input = profileInput.parse(req.body);
-    const current = getProfile(req.user!.id);
-    if (current.status === 'approved' || current.status === 'suspended') {
-      throw httpError(409, 'Contact support to change your details');
+  // Approved drivers can't edit their own documents; ops re-verifies changes.
+  r.put('/profile', async (c) => {
+    const userId = c.get('user').id;
+    const existing = getProfile(userId);
+    if (existing && existing.status !== 'pending' && existing.status !== 'rejected') {
+      throw conflict('Contact support to change verified details');
     }
-    if (!req.user!.phone) throw httpError(400, 'Add your mobile number first');
-    db.update(drivers)
-      .set({ ...input, status: 'pending', rejectionReason: null })
-      .where(eq(drivers.userId, req.user!.id))
-      .run();
-    return { profile: getProfile(req.user!.id) };
+    const input = await parseBody(c, driverProfileInput);
+    db.prepare(
+      `INSERT INTO driver_profiles (user_id, license_number, license_expiry, transmission, status)
+       VALUES (?, ?, ?, ?, 'pending')
+       ON CONFLICT (user_id) DO UPDATE SET
+         license_number = excluded.license_number,
+         license_expiry = excluded.license_expiry,
+         transmission = excluded.transmission,
+         status = 'pending',
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+    ).run(userId, input.licenseNumber, input.licenseExpiry, input.transmission);
+    return c.json(getProfile(userId));
   });
+
+  r.post('/online', async (c) => {
+    const { online } = await parseBody(c, z.object({ online: z.boolean() }));
+    const userId = c.get('user').id;
+    if (online && getProfile(userId)?.status !== 'approved') {
+      throw new HTTPException(403, { message: 'You can go online once your profile is approved' });
+    }
+    db.prepare('UPDATE driver_profiles SET is_online = ? WHERE user_id = ?').run(online ? 1 : 0, userId);
+    return c.json(getProfile(userId));
+  });
+
+  r.get('/bookings', (c) => {
+    const rows = db
+      .prepare(
+        `${BOOKING_SELECT} WHERE b.driver_id = ?
+         ORDER BY CASE WHEN b.status IN ('assigned', 'in_progress') THEN 0 ELSE 1 END, b.scheduled_at DESC
+         LIMIT 50`,
+      )
+      .all(c.get('user').id);
+    return c.json(rows.map((row) => rowToBooking(row)));
+  });
+
+  r.post('/bookings/:id/start', async (c) => {
+    const { otp } = await parseBody(c, z.object({ otp: z.string().regex(/^\d{4}$/, 'Enter the 4-digit code') }));
+    const id = idParam(c);
+    const row = ownBooking(c, id);
+    if (row.status !== 'assigned') throw conflict('This trip cannot be started');
+    if (row.start_otp !== otp) throw new HTTPException(400, { message: 'Incorrect start code' });
+    db.prepare(`UPDATE bookings SET status = 'in_progress', started_at = ? WHERE id = ?`).run(new Date().toISOString(), id);
+    return c.json(rowToBooking(findBooking(db, id)));
+  });
+
+  r.post('/bookings/:id/end', (c) => {
+    const id = idParam(c);
+    const row = ownBooking(c, id);
+    if (row.status !== 'in_progress') throw conflict('This trip is not in progress');
+    const endedAt = new Date();
+    const fare = finalFare(JSON.parse(row.rate_card_json as string) as RateCard, new Date(row.started_at as string), endedAt);
+    db.prepare(`UPDATE bookings SET status = 'completed', ended_at = ?, fare_json = ? WHERE id = ?`).run(
+      endedAt.toISOString(),
+      JSON.stringify(fare),
+      id,
+    );
+    return c.json(rowToBooking(findBooking(db, id)));
+  });
+
+  return r;
 }

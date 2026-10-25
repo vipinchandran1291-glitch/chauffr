@@ -1,22 +1,31 @@
-import { LoginScreen, Shell, Splash, useSession, type TrustPoint } from '@chauffr/ui';
-import { Drivers } from './Drivers';
-import { RateCardPanel } from './RateCardPanel';
+import { useState } from 'react';
+import { createApi, SessionGate, Shell } from '@chauffr/ui';
+import { Bookings } from './Bookings.tsx';
+import { Drivers } from './Drivers.tsx';
+import { RateCardPanel } from './RateCardPanel.tsx';
 
-const POINTS: TrustPoint[] = [
-  { icon: 'shieldCheck', title: 'Driver verification', text: 'Review and approve every driver before they go online.' },
-  { icon: 'rupee', title: 'Pricing', text: 'Rates and commission in one place.' },
-];
+const api = createApi('admin');
+
+type TabId = 'bookings' | 'drivers' | 'rates';
 
 export function App() {
-  const { user, loading } = useSession();
-  if (loading) return <Splash />;
-  if (!user) {
-    return <LoginScreen app="admin" title="Operations" tagline="Sign in with an admin Google account." points={POINTS} />;
-  }
+  const [tab, setTab] = useState<TabId>('bookings');
   return (
-    <Shell section="Operations" wide>
-      <Drivers />
-      <RateCardPanel />
-    </Shell>
+    <SessionGate api={api} title="Chauffr Ops" tagline="Operations dashboard">
+      <Shell<TabId>
+        title="Chauffr Ops"
+        tabs={[
+          { id: 'bookings', label: 'Bookings' },
+          { id: 'drivers', label: 'Drivers' },
+          { id: 'rates', label: 'Rate card' },
+        ]}
+        active={tab}
+        onTab={setTab}
+      >
+        {tab === 'bookings' && <Bookings />}
+        {tab === 'drivers' && <Drivers />}
+        {tab === 'rates' && <RateCardPanel />}
+      </Shell>
+    </SessionGate>
   );
 }
