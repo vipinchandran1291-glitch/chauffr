@@ -1,9 +1,11 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import { bookingInput, carInput, estimateFare, fareEstimateInput } from '@chauffr/shared';
+import { bookingInput, carInput, estimateFare, fareEstimateInput, type FareBreakdown, type PaymentOrder } from '@chauffr/shared';
 import { requireUser, type AppEnv } from '../auth.ts';
 import type { DB } from '../db.ts';
+import type { PaymentGateway } from '../razorpay.ts';
+import { markOrderPaid } from './payments.ts';
 import {
   BOOKING_SELECT,
   conflict,
@@ -20,9 +22,15 @@ import {
 const MAX_ADVANCE_DAYS = 30;
 const PAST_TOLERANCE_MS = 5 * 60_000;
 
-export function customerRoutes(db: DB) {
+export function customerRoutes(db: DB, gateway: PaymentGateway) {
   const r = new Hono<AppEnv>();
   r.use(requireUser(db, ['customer']));
+
+  const ownBooking = (customerId: number, id: number) => {
+    const row = findBooking(db, id);
+    if (row.customer_id !== customerId) throw notFound('Booking');
+    return row;
+  };
 
   r.get('/cars', (c) => {
     const rows = db
@@ -63,15 +71,69 @@ export function customerRoutes(db: DB) {
   });
 
   r.get('/bookings/:id', (c) => {
-    const row = findBooking(db, idParam(c));
-    if (row.customer_id !== c.get('user').id) throw notFound('Booking');
-    return c.json(rowToBooking(row, { includeOtp: true }));
+    return c.json(rowToBooking(ownBooking(c.get('user').id, idParam(c)), { includeOtp: true }));
+  });
+
+  r.post('/bookings/:id/pay', async (c) => {
+    const user = c.get('user');
+    const id = idParam(c);
+    const row = ownBooking(user.id, id);
+    if (row.status !== 'completed') throw conflict('You can pay once the trip has ended');
+    if (row.payment_status === 'paid') throw conflict('This trip is already paid');
+    if (!gateway.configured) throw new HTTPException(503, { message: 'Payments are not set up yet' });
+
+    const amount = (JSON.parse(row.fare_json as string) as FareBreakdown).total;
+    // Reuse an open order so retrying Checkout doesn't pile up orders on Razorpay.
+    const open = db
+      .prepare(`SELECT razorpay_order_id FROM payments WHERE booking_id = ? AND status = 'created' AND amount = ? ORDER BY id DESC`)
+      .get(id, amount);
+    let orderId = open?.razorpay_order_id as string | undefined;
+    if (!orderId) {
+      const order = await gateway.createOrder({ amount, receipt: `booking_${id}`, notes: { bookingId: String(id) } });
+      orderId = order.id;
+      db.prepare('INSERT INTO payments (booking_id, razorpay_order_id, amount) VALUES (?, ?, ?)').run(id, orderId, amount);
+    }
+    const order: PaymentOrder = {
+      keyId: gateway.keyId,
+      orderId,
+      amount,
+      currency: 'INR',
+      prefill: { name: user.name, email: user.email, contact: user.phone ? `+91${user.phone}` : '' },
+    };
+    return c.json(order);
+  });
+
+  r.post('/bookings/:id/pay/verify', async (c) => {
+    const input = await parseBody(
+      c,
+      z.object({
+        razorpayOrderId: z.string().min(1),
+        razorpayPaymentId: z.string().min(1),
+        razorpaySignature: z.string().min(1),
+      }),
+    );
+    const id = idParam(c);
+    ownBooking(c.get('user').id, id);
+    const payment = db
+      .prepare('SELECT id FROM payments WHERE razorpay_order_id = ? AND booking_id = ?')
+      .get(input.razorpayOrderId, id);
+    if (!payment) throw notFound('Payment');
+    if (!gateway.verifyPaymentSignature(input.razorpayOrderId, input.razorpayPaymentId, input.razorpaySignature)) {
+      throw new HTTPException(400, { message: 'Payment could not be verified' });
+    }
+    markOrderPaid(db, input.razorpayOrderId, input.razorpayPaymentId);
+    return c.json(rowToBooking(findBooking(db, id), { includeOtp: true }));
   });
 
   r.post('/bookings', async (c) => {
     const user = c.get('user');
     if (!user.phone) throw new HTTPException(400, { message: 'Add your phone number before booking' });
     const input = await parseBody(c, bookingInput);
+
+    const unpaid = db
+      .prepare(`SELECT id FROM bookings WHERE customer_id = ? AND status = 'completed' AND payment_status = 'unpaid'`)
+      .get(user.id);
+    if (unpaid) throw conflict('Please pay for your last trip before booking again');
 
     const car = db
       .prepare('SELECT id FROM cars WHERE id = ? AND owner_id = ? AND deleted_at IS NULL')
@@ -111,8 +173,7 @@ export function customerRoutes(db: DB) {
   r.post('/bookings/:id/cancel', async (c) => {
     const { reason } = await parseBody(c, z.object({ reason: z.string().trim().max(200).default('') }));
     const id = idParam(c);
-    const row = findBooking(db, id);
-    if (row.customer_id !== c.get('user').id) throw notFound('Booking');
+    const row = ownBooking(c.get('user').id, id);
     if (row.status !== 'requested' && row.status !== 'assigned') {
       throw conflict('This booking can no longer be cancelled');
     }

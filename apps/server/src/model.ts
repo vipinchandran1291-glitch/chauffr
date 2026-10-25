@@ -100,6 +100,9 @@ export function rowToBooking(r: Row, opts: { includeOtp?: boolean } = {}): Booki
     startedAt: (r.started_at as string | null) ?? null,
     endedAt: (r.ended_at as string | null) ?? null,
     fare: r.fare_json ? JSON.parse(r.fare_json as string) : null,
+    paymentStatus: r.payment_status as Booking['paymentStatus'],
+    paidAt: (r.paid_at as string | null) ?? null,
+    paidOut: r.payout_id != null,
     cancelReason: (r.cancel_reason as string | null) ?? null,
     createdAt: r.created_at as string,
   };

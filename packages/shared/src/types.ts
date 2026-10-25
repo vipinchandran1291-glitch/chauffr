@@ -7,6 +7,7 @@ export type CarType = 'hatchback' | 'sedan' | 'suv' | 'luxury';
 
 export type DriverStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
 export type BookingStatus = 'requested' | 'assigned' | 'in_progress' | 'completed' | 'cancelled';
+export type PaymentStatus = 'unpaid' | 'paid';
 
 /** All money values are integer paise. */
 export type Paise = number;
@@ -73,7 +74,39 @@ export interface Booking {
   startedAt: string | null;
   endedAt: string | null;
   fare: FareBreakdown | null;
+  paymentStatus: PaymentStatus;
+  paidAt: string | null;
+  /** The driver's share has been paid out to them. */
+  paidOut: boolean;
   cancelReason: string | null;
+  createdAt: string;
+}
+
+/** What the customer app needs to open Razorpay Checkout. */
+export interface PaymentOrder {
+  keyId: string;
+  orderId: string;
+  amount: Paise;
+  currency: 'INR';
+  prefill: { name: string; email: string; contact: string };
+}
+
+export interface DriverOwed {
+  driverId: number;
+  name: string;
+  phone: string | null;
+  owed: Paise;
+  trips: number;
+}
+
+export interface Payout {
+  id: number;
+  driverId: number;
+  driverName: string;
+  amount: Paise;
+  bookingCount: number;
+  reference: string;
+  note: string | null;
   createdAt: string;
 }
 

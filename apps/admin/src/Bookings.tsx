@@ -76,6 +76,11 @@ function BookingCard({ booking: b, onChange }: { booking: Booking; onChange(): v
           ? `Fare ${formatRupees(b.fare.total)} - driver ${formatRupees(b.fare.driverEarning)} - platform ${formatRupees(b.fare.platformFee)}`
           : `Estimate ${formatRupees(b.estimatedFare)}`}
       </p>
+      {b.status === 'completed' && (
+        <p className={b.paymentStatus === 'paid' ? 'small paid' : 'small error'}>
+          {b.paymentStatus === 'paid' ? `Customer paid${b.paidOut ? ', driver paid out' : ''}` : 'Customer has not paid yet'}
+        </p>
+      )}
       {b.cancelReason && <p className="small muted">Cancelled: {b.cancelReason}</p>}
 
       {open && !assigning && (

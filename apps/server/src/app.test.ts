@@ -3,13 +3,30 @@ import type { AppName, Booking } from '@chauffr/shared';
 import { createApp } from './app.ts';
 import { openDb } from './db.ts';
 import { loadEnv } from './env.ts';
+import { hmacHex, razorpayGateway, type PaymentGateway } from './razorpay.ts';
 
 type App = ReturnType<typeof createApp>;
 
+const KEY_SECRET = 'test_key_secret';
+const WEBHOOK_SECRET = 'test_webhook_secret';
 const env = loadEnv({ DEV_LOGIN: 'true', ADMIN_EMAILS: 'ops@chauffr.in' });
 const noGoogle = async () => {
   throw new Error('not used');
 };
+
+/** Real signature checks with test secrets; orders are created locally instead of calling Razorpay. */
+function fakeGateway(): PaymentGateway & { ordersCreated: number } {
+  const real = razorpayGateway({ keyId: 'rzp_test_fake', keySecret: KEY_SECRET, webhookSecret: WEBHOOK_SECRET });
+  const gw = {
+    ...real,
+    ordersCreated: 0,
+    async createOrder({ amount }: { amount: number }) {
+      gw.ordersCreated++;
+      return { id: `order_${gw.ordersCreated}`, amount, currency: 'INR' };
+    },
+  };
+  return gw;
+}
 
 class Client {
   cookie = '';
@@ -18,11 +35,11 @@ class Client {
     private appName: AppName,
   ) {}
 
-  async req(method: string, path: string, body?: unknown) {
+  async req(method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
     const res = await this.app.request(`/api${path}`, {
       method,
-      headers: { 'content-type': 'application/json', 'x-chauffr-app': this.appName, cookie: this.cookie },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: { 'content-type': 'application/json', 'x-chauffr-app': this.appName, cookie: this.cookie, ...headers },
+      body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
     });
     const setCookie = res.headers.get('set-cookie');
     if (setCookie) this.cookie = setCookie.split(';')[0]!;
@@ -39,12 +56,14 @@ class Client {
 const inOneHour = () => new Date(Date.now() + 3_600_000).toISOString();
 
 let app: App;
+let gateway: ReturnType<typeof fakeGateway>;
 let customer: Client;
 let driver: Client;
 let admin: Client;
 
 beforeEach(async () => {
-  app = createApp(openDb(':memory:'), env, noGoogle);
+  gateway = fakeGateway();
+  app = createApp(openDb(':memory:'), env, noGoogle, gateway);
   customer = new Client(app, 'customer');
   driver = new Client(app, 'driver');
   admin = new Client(app, 'admin');
@@ -193,5 +212,117 @@ describe('drivers', () => {
   it('cannot go online until approved', async () => {
     await driver.req('PUT', '/driver/profile', { licenseNumber: 'KA0120200001234', licenseExpiry: '2032-01-01', transmission: 'manual' });
     expect((await driver.req('POST', '/driver/online', { online: true })).status).toBe(403);
+  });
+});
+
+async function completedTrip() {
+  const booking = await setUpCustomerBooking();
+  const driverId = await approveDriver();
+  await admin.req('POST', `/admin/bookings/${booking.id}/assign`, { driverId });
+  await driver.req('POST', `/driver/bookings/${booking.id}/start`, { otp: booking.startOtp });
+  const ended = await driver.req('POST', `/driver/bookings/${booking.id}/end`);
+  return { booking: ended.body as Booking, driverId };
+}
+
+const checkoutResult = (orderId: string, paymentId = 'pay_1') => ({
+  razorpayOrderId: orderId,
+  razorpayPaymentId: paymentId,
+  razorpaySignature: hmacHex(KEY_SECRET, `${orderId}|${paymentId}`),
+});
+
+function webhook(event: string, orderId: string, amount: number, secret = WEBHOOK_SECRET) {
+  const body = JSON.stringify({
+    event,
+    payload: { payment: { entity: { id: 'pay_wh', order_id: orderId, amount, status: 'captured' } } },
+  });
+  return new Client(app, 'customer').req('POST', '/payments/razorpay/webhook', body, {
+    'x-razorpay-signature': hmacHex(secret, body),
+  });
+}
+
+describe('payments', () => {
+  it('only takes payment once the trip has ended', async () => {
+    const booking = await setUpCustomerBooking();
+    expect((await customer.req('POST', `/customer/bookings/${booking.id}/pay`)).status).toBe(409);
+  });
+
+  it('charges the final fare and marks the trip paid after a verified checkout', async () => {
+    const { booking } = await completedTrip();
+    expect(booking.paymentStatus).toBe('unpaid');
+
+    const order = await customer.req('POST', `/customer/bookings/${booking.id}/pay`);
+    expect(order.body.amount).toBe(booking.fare!.total);
+    expect(order.body.keyId).toBe('rzp_test_fake');
+
+    const paid = await customer.req('POST', `/customer/bookings/${booking.id}/pay/verify`, checkoutResult(order.body.orderId));
+    expect(paid.body.paymentStatus).toBe('paid');
+    expect((await customer.req('POST', `/customer/bookings/${booking.id}/pay`)).status).toBe(409);
+  });
+
+  it('reuses an open order when the customer retries', async () => {
+    const { booking } = await completedTrip();
+    const first = await customer.req('POST', `/customer/bookings/${booking.id}/pay`);
+    const second = await customer.req('POST', `/customer/bookings/${booking.id}/pay`);
+    expect(second.body.orderId).toBe(first.body.orderId);
+    expect(gateway.ordersCreated).toBe(1);
+  });
+
+  it('rejects a forged checkout signature', async () => {
+    const { booking } = await completedTrip();
+    const order = await customer.req('POST', `/customer/bookings/${booking.id}/pay`);
+    const res = await customer.req('POST', `/customer/bookings/${booking.id}/pay/verify`, {
+      ...checkoutResult(order.body.orderId),
+      razorpaySignature: 'forged',
+    });
+    expect(res.status).toBe(400);
+    expect((await customer.req('GET', `/customer/bookings/${booking.id}`)).body.paymentStatus).toBe('unpaid');
+  });
+
+  it('marks the trip paid from the webhook, and ignores bad signatures and wrong amounts', async () => {
+    const { booking } = await completedTrip();
+    const order = await customer.req('POST', `/customer/bookings/${booking.id}/pay`);
+    const amount = order.body.amount as number;
+
+    expect((await webhook('payment.captured', order.body.orderId, amount, 'wrong')).status).toBe(400);
+    await webhook('payment.captured', order.body.orderId, amount - 100);
+    expect((await customer.req('GET', `/customer/bookings/${booking.id}`)).body.paymentStatus).toBe('unpaid');
+
+    expect((await webhook('payment.captured', order.body.orderId, amount)).status).toBe(200);
+    expect((await webhook('order.paid', order.body.orderId, amount)).status).toBe(200);
+    expect((await customer.req('GET', `/customer/bookings/${booking.id}`)).body.paymentStatus).toBe('paid');
+  });
+
+  it('acknowledges webhooks for orders it does not know', async () => {
+    expect((await webhook('payment.captured', 'order_elsewhere', 100)).status).toBe(200);
+  });
+
+  it('asks the customer to pay before booking again', async () => {
+    const { booking } = await completedTrip();
+    const res = await customer.req('POST', '/customer/bookings', {
+      carId: booking.car.id, pickupAddress: '12 MG Road, Bengaluru', scheduledAt: inOneHour(), bookedHours: 4,
+    });
+    expect(res.status).toBe(409);
+  });
+});
+
+describe('payouts', () => {
+  it('tracks what each driver is owed and clears it once paid out', async () => {
+    const { booking, driverId } = await completedTrip();
+    expect((await admin.req('GET', '/admin/payouts')).body.owed).toEqual([]);
+
+    const order = await customer.req('POST', `/customer/bookings/${booking.id}/pay`);
+    await customer.req('POST', `/customer/bookings/${booking.id}/pay/verify`, checkoutResult(order.body.orderId));
+
+    const before = (await admin.req('GET', '/admin/payouts')).body;
+    expect(before.owed).toEqual([expect.objectContaining({ driverId, owed: booking.fare!.driverEarning, trips: 1 })]);
+
+    const payout = await admin.req('POST', '/admin/payouts', { driverId, reference: 'UTR123456' });
+    expect(payout.status).toBe(201);
+    const after = (await admin.req('GET', '/admin/payouts')).body;
+    expect(after.owed).toEqual([]);
+    expect(after.payouts[0]).toMatchObject({ driverId, amount: booking.fare!.driverEarning, reference: 'UTR123456' });
+
+    expect((await driver.req('GET', '/driver/bookings')).body[0].paidOut).toBe(true);
+    expect((await admin.req('POST', '/admin/payouts', { driverId, reference: 'UTR999' })).status).toBe(409);
   });
 });

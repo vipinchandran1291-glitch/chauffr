@@ -1,5 +1,6 @@
-import { formatRupees, type Booking } from '@chauffr/shared';
+import { formatRupees, type Booking, type PaymentOrder } from '@chauffr/shared';
 import { formatWhen, StatusBadge, useAction, useLoad, useSession } from '@chauffr/ui';
+import { openCheckout } from './checkout.ts';
 
 export function TripsTab() {
   const { api } = useSession();
@@ -22,6 +23,19 @@ function TripCard({ booking: b, onChange }: { booking: Booking; onChange(): void
   const { api } = useSession();
   const action = useAction();
   const cancellable = b.status === 'requested' || b.status === 'assigned';
+
+  const pay = () =>
+    action.run(async () => {
+      const order = await api<PaymentOrder>('POST', `/customer/bookings/${b.id}/pay`);
+      const result = await openCheckout(order, `Trip on ${formatWhen(b.scheduledAt)}`);
+      if (!result) return;
+      await api('POST', `/customer/bookings/${b.id}/pay/verify`, {
+        razorpayOrderId: result.razorpay_order_id,
+        razorpayPaymentId: result.razorpay_payment_id,
+        razorpaySignature: result.razorpay_signature,
+      });
+      onChange();
+    });
 
   const cancel = () => {
     if (!confirm('Cancel this booking?')) return;
@@ -75,6 +89,15 @@ function TripCard({ booking: b, onChange }: { booking: Booking; onChange(): void
         b.status !== 'cancelled' && <p className="small muted">Estimate {formatRupees(b.estimatedFare)}</p>
       )}
       {b.cancelReason && <p className="small muted">{b.cancelReason}</p>}
+
+      {b.status === 'completed' &&
+        (b.paymentStatus === 'paid' ? (
+          <p className="small paid">Paid {b.paidAt && `on ${formatWhen(b.paidAt)}`}. Thank you!</p>
+        ) : (
+          <button onClick={pay} disabled={action.busy}>
+            {action.busy ? 'Opening payment...' : `Pay ${formatRupees(b.fare!.total)}`}
+          </button>
+        ))}
 
       {action.error && <p className="error">{action.error}</p>}
       {cancellable && (

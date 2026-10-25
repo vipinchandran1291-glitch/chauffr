@@ -109,7 +109,9 @@ function Dashboard({ profile, onProfile }: { profile: DriverProfile; onProfile()
 
   const active = trips?.filter((t) => t.status === 'assigned' || t.status === 'in_progress') ?? [];
   const past = trips?.filter((t) => t.status === 'completed' || t.status === 'cancelled') ?? [];
-  const earned = past.reduce((sum, t) => sum + (t.fare?.driverEarning ?? 0), 0);
+  const earning = (t: Booking) => t.fare?.driverEarning ?? 0;
+  const owed = past.filter((t) => t.paymentStatus === 'paid' && !t.paidOut).reduce((s, t) => s + earning(t), 0);
+  const awaiting = past.filter((t) => t.status === 'completed' && t.paymentStatus === 'unpaid').reduce((s, t) => s + earning(t), 0);
 
   return (
     <div className="stack">
@@ -133,10 +135,15 @@ function Dashboard({ profile, onProfile }: { profile: DriverProfile; onProfile()
 
       {past.length > 0 && (
         <>
-          <div className="spread">
-            <h2>Recent trips</h2>
-            <span className="muted small">Earned {formatRupees(earned)}</span>
+          <div className="card">
+            <div className="spread">
+              <span className="muted">Chauffr owes you</span>
+              <span className="amount">{formatRupees(owed)}</span>
+            </div>
+            {awaiting > 0 && <p className="small muted">+ {formatRupees(awaiting)} once customers pay for their trips</p>}
+            <p className="small muted">Payouts are sent weekly to your bank or UPI.</p>
           </div>
+          <h2>Recent trips</h2>
           {past.map((t) => (
             <div key={t.id} className="card spread">
               <div>
@@ -145,7 +152,16 @@ function Dashboard({ profile, onProfile }: { profile: DriverProfile; onProfile()
                   {t.car.make} {t.car.model} - {t.customer.name}
                 </p>
               </div>
-              {t.fare ? <strong>{formatRupees(t.fare.driverEarning)}</strong> : <StatusBadge status={t.status} />}
+              {t.fare ? (
+                <div style={{ textAlign: 'right' }}>
+                  <strong>{formatRupees(t.fare.driverEarning)}</strong>
+                  <p className="small muted">
+                    {t.paidOut ? 'Paid out' : t.paymentStatus === 'paid' ? 'Customer paid' : 'Awaiting payment'}
+                  </p>
+                </div>
+              ) : (
+                <StatusBadge status={t.status} />
+              )}
             </div>
           ))}
         </>

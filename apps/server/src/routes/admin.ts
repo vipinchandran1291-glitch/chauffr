@@ -1,7 +1,14 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import { rateCardInput, type AdminDriver, type BookingStatus, type DriverStatus } from '@chauffr/shared';
+import {
+  rateCardInput,
+  type AdminDriver,
+  type BookingStatus,
+  type DriverOwed,
+  type DriverStatus,
+  type Payout,
+} from '@chauffr/shared';
 import { requireUser, rowToUser, type AppEnv } from '../auth.ts';
 import { transaction, type DB } from '../db.ts';
 import {
@@ -127,6 +134,75 @@ export function adminRoutes(db: DB) {
       .run(reason, id);
     if (!changes) throw conflict('Only requested or assigned bookings can be cancelled');
     return c.json(rowToBooking(findBooking(db, id)));
+  });
+
+  /** Drivers' share of customer-paid trips that hasn't been paid out yet, plus recent payouts. */
+  r.get('/payouts', (c) => {
+    const owed: DriverOwed[] = db
+      .prepare(
+        `SELECT u.id, u.name, u.phone,
+           SUM(json_extract(b.fare_json, '$.driverEarning')) AS owed, COUNT(*) AS trips
+         FROM bookings b JOIN users u ON u.id = b.driver_id
+         WHERE b.payment_status = 'paid' AND b.payout_id IS NULL
+         GROUP BY u.id ORDER BY owed DESC`,
+      )
+      .all()
+      .map((row) => ({
+        driverId: row.id as number,
+        name: row.name as string,
+        phone: (row.phone as string | null) ?? null,
+        owed: row.owed as number,
+        trips: row.trips as number,
+      }));
+    const payouts: Payout[] = db
+      .prepare(
+        `SELECT p.*, u.name AS driver_name FROM payouts p JOIN users u ON u.id = p.driver_id
+         ORDER BY p.id DESC LIMIT 50`,
+      )
+      .all()
+      .map((row) => ({
+        id: row.id as number,
+        driverId: row.driver_id as number,
+        driverName: row.driver_name as string,
+        amount: row.amount as number,
+        bookingCount: row.booking_count as number,
+        reference: row.reference as string,
+        note: (row.note as string | null) ?? null,
+        createdAt: row.created_at as string,
+      }));
+    return c.json({ owed, payouts });
+  });
+
+  /** Records that ops has paid a driver everything they are currently owed. */
+  r.post('/payouts', async (c) => {
+    const input = await parseBody(
+      c,
+      z.object({
+        driverId: z.number().int().positive(),
+        reference: z.string().trim().min(3).max(100),
+        note: z.string().trim().max(300).optional(),
+      }),
+    );
+    const payoutId = transaction(db, () => {
+      const trips = db
+        .prepare(
+          `SELECT id, json_extract(fare_json, '$.driverEarning') AS earning FROM bookings
+           WHERE driver_id = ? AND payment_status = 'paid' AND payout_id IS NULL`,
+        )
+        .all(input.driverId);
+      if (!trips.length) throw conflict('Nothing is owed to this driver');
+      const amount = trips.reduce((sum, t) => sum + (t.earning as number), 0);
+      const { id } = db
+        .prepare(
+          `INSERT INTO payouts (driver_id, amount, booking_count, reference, note, created_by)
+           VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+        )
+        .get(input.driverId, amount, trips.length, input.reference, input.note || null, c.get('user').id)!;
+      const mark = db.prepare('UPDATE bookings SET payout_id = ? WHERE id = ?');
+      for (const t of trips) mark.run(id as number, t.id as number);
+      return id as number;
+    });
+    return c.json({ id: payoutId }, 201);
   });
 
   r.get('/rate-card', (c) => c.json(getRateCard(db)));

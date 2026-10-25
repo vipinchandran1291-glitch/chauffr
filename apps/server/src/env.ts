@@ -6,6 +6,7 @@ export interface Env {
   /** Allows signing in with just an email. Never enable in production. */
   devLogin: boolean;
   cookieSecure: boolean;
+  razorpay: { keyId: string; keySecret: string; webhookSecret: string };
 }
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
@@ -25,5 +26,10 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     ),
     devLogin,
     cookieSecure: source.NODE_ENV === 'production',
+    razorpay: {
+      keyId: source.RAZORPAY_KEY_ID ?? '',
+      keySecret: source.RAZORPAY_KEY_SECRET ?? '',
+      webhookSecret: source.RAZORPAY_WEBHOOK_SECRET ?? '',
+    },
   };
 }
